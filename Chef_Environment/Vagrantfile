@@ -1,0 +1,213 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+$script_setupHosts = <<SCRIPT
+echo "Setting up hostname..."
+echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+mv /etc/hosts /etc/hosts.old
+touch /etc/hosts
+echo "192.168.56.2 jenkinsMaster" >> /etc/hosts
+echo "192.168.56.3 jenkinsSlave" >> /etc/hosts
+echo "192.168.56.4 toolsVM" >> /etc/hosts
+echo "192.168.56.5 chefServer" >> /etc/hosts
+echo "192.168.56.6 appNode1" >> /etc/hosts
+echo "192.168.56.7 appNode2" >> /etc/hosts
+echo "127.0.0.1 localhost" >> /etc/hosts
+#Disable IPV6
+echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
+SCRIPT
+
+$script_disableRHFirewall = <<SCRIPT
+#Allowing through firewall
+echo "Allowing through firewall..."
+service iptables stop
+chkconfig iptables off
+echo "Networking/Hosts setup done..."
+SCRIPT
+
+$script_installChef12 = <<SCRIPT
+echo "Install of Chef server started..."
+cd /opt/
+echo "Downloading chef from repo..."
+wget -nv -O /opt/chef-server-core_12.3.0-1_amd64.deb https://web-dl.packagecloud.io/chef/stable/packages/ubuntu/trusty/chef-server-core_12.3.0-1_amd64.deb
+echo "Starting the installation onf chef-server-core..."
+dpkg -i chef-server*
+echo "Running the reconfigure command..."
+chef-server-ctl reconfigure
+echo "Checking Chef Server..."
+chef-server-ctl status
+echo "Install of Chef server Done..."
+
+SCRIPT
+
+$script_installChefGUI = <<SCRIPT
+echo "Installing the Chef 12 GUI..."
+chef-server-ctl install opscode-manage
+opscode-manage-ctl reconfigure
+chef-server-ctl reconfigure
+echo "Installationg of GUI done..."
+SCRIPT
+
+$script_installChefDK = <<SCRIPT
+echo "Downloading ChefDK..."
+wget -nv -O /opt/chefdk_0.10.0-1_amd64.deb https://opscode-omnibus-packages.s3.amazonaws.com/ubuntu/12.04/x86_64/chefdk_0.10.0-1_amd64.deb
+echo "Installing ChefDK..."
+cd /opt; dpkg -i chefdk_0.10.0-1_amd64.deb
+touch /etc/profile.d/bash.sh
+echo 'eval "$(chef shell-init bash)"' >> /etc/profile.d/bash.sh
+which ruby
+echo "Installation of ChefDK done.."
+SCRIPT
+
+$script_UbuntuTools =<<SCRIPT
+echo "Installing git on Ubuntu ..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get -q -y install git
+echo "Git client installed..."
+
+SCRIPT
+
+$script_CentOSTools = <<SCRIPT
+echo "Installing tools on CentOS.."
+yum -y install zip unzip mc epel-release
+echo "Tools installed!"
+SCRIPT
+
+$script_setupWSChef = <<SCRIPT
+
+echo "Setting up chef workstation workspace..."
+mkdir -p /home/vagrant/chef-repo/.chef
+
+echo "Setting up the knife.rb ..."
+touch /home/vagrant/chef-repo/.chef/knife.rb
+echo "current_dir = File.dirname(__FILE__)" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "log_level                :info" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "ssl_verify_mode          :verify_none" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "log_location             STDOUT" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "node_name                'vagrant'" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "client_key               '/home/vagrant/chef-repo/.chef/vagrant.pem'" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "validation_client_name   'chef-validator'" >> /home/vagrant/knife.rb
+echo "validation_key           '\#{ENV[\"HOME\"]}/.chef/devops-validator.pem'" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "chef_server_url          'https://chefServer/organizations/devops'" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "cache_type               'BasicFile'" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "cache_options\( :path => '/home/vagrant/chef-repo/.chef/checksums'\)" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "cookbook_path            ['/home/vagrant/chef-repo/.chef/../cookbooks']" >> /home/vagrant/chef-repo/.chef/knife.rb
+echo "knife[:editor]           ='/usr/bin/vim'" >> /home/vagrant/chef-repo/.chef/knife.rb
+
+echo "Setup the chef-repo..."
+cd /home/vagrant
+chef generate app chef-repo
+
+echo "Setup the Organization and admin user... "
+sudo chef-server-ctl org-create devops "Endava Devops" -f /home/vagrant/chef-repo/.chef/devops-validator.pem
+sudo chef-server-ctl user-create vagrant DevOps Vagrant vagrant@endava.com vagrant -f /home/vagrant/chef-repo/.chef/vagrant.pem
+chmod 644 /home/vagrant/chef-repo/.chef/*.pem
+sudo chef-server-ctl org-user-add devops vagrant --admin
+
+echo "Fetching the SSL certificates... "
+cd /home/vagrant/chef-repo
+knife ssl fetch https://chefServer
+knife ssl check https://chefServer
+
+echo "Setting up the owner on .chef ..."
+sudo chown -R vagrant:vagrant /home/vagrant
+ls -l /home/vagrant/chef-repo/.chef
+
+echo "List of client on chef:"
+cd /home/vagrant/chef-repo
+knife client list
+
+echo "Workstation completed setup..."
+echo "All operations done for chef-server/chef-client/chef-workstation..."
+
+SCRIPT
+
+$script_setupClientRB_on_node = <<SCRIPT
+echo "Setting up client.rb on nodes..."
+sudo mkdir -p /etc/chef
+touch /etc/chef/client.rb
+echo 'log_location     STDOUT' >> /etc/chef/client.rb
+echo 'ssl_verify_mode          :verify_none' >> /etc/chef/client.rb
+echo 'chef_server_url  \"https://chefServer/organizations/devops\"' >> /etc/chef/client.rb
+echo 'validation_client_name \"devops-validator\"' >> /etc/chef/client.rb
+echo 'node_name \"jenkinsMaster\"' >> /etc/chef/client.rb
+echo 'trusted_certs_dir \"/etc/chef/trusted_certs\"' >> /etc/chef/client.rb
+echo "The client.rb setup is in place..."
+SCRIPT
+
+$script_bootstrapNodes = <<SCRIPT
+echo "Registering the nodes to chef-server..."
+cd /home/vagrant/chef-repo
+knife bootstrap appNode1 -N appNode1 -x vagrant -P vagrant --sudo --use-sudo-password --node-ssl-verify-mode none
+knife bootstrap appNode2 -N appNode2 -x vagrant -P vagrant --sudo --use-sudo-password --node-ssl-verify-mode none
+echo "Registere nodes are below:"
+knife node list
+echo "Bootstrap operation done..."
+SCRIPT
+
+Vagrant.configure("2") do |config|
+  
+  config.vm.define "appNode1" do |appNode1|
+     appNode1.vm.box = "cjwelle/Centos-6.7-minimal"
+     appNode1.vm.hostname = "appNode1"
+     appNode1.vm.synced_folder ".", "/vagrant", type: "virtualbox", disabled: true
+     appNode1.vm.provision :shell, :inline => $script_setupHosts
+     appNode1.vm.provision :shell, :inline => $script_disableRHFirewall
+     appNode1.vm.provision :shell, :inline => $script_CentOSTools
+     appNode1.vm.provision :shell, :inline => $script_setupClientRB_on_node
+     appNode1.vm.network "private_network", ip: "192.168.56.6", virtualbox__hostonly: true
+     appNode1.vm.network "forwarded_port", guest: 22, host: 6022, id: "ssh", auto_correct: true
+     appNode1.vm.provider "virtualbox" do |vm|
+      vm.name = "appNode1"
+			vm.customize [
+							'modifyvm', :id,
+							'--memory', '512'
+							
+						]
+		end
+  end
+  
+  config.vm.define "appNode2" do |appNode2|
+     appNode2.vm.box = "cjwelle/Centos-6.7-minimal"
+     appNode2.vm.hostname = "appNode2"
+     appNode2.vm.synced_folder ".", "/vagrant", type: "virtualbox", disabled: true
+     appNode2.vm.provision :shell, :inline => $script_setupHosts
+     appNode2.vm.provision :shell, :inline => $script_disableRHFirewall
+     appNode2.vm.provision :shell, :inline => $script_CentOSTools
+     appNode2.vm.provision :shell, :inline => $script_setupClientRB_on_node
+     appNode2.vm.network "private_network", ip: "192.168.56.7", virtualbox__hostonly: true
+     appNode2.vm.network "forwarded_port", guest: 22, host: 7022, id: "ssh", auto_correct: true
+     appNode2.vm.provider "virtualbox" do |vm|
+      vm.name = "appNode2"
+			vm.customize [
+							'modifyvm', :id,
+							'--memory', '512'
+							
+						]
+		end
+  end
+  
+  config.vm.define "chefServer" do |chefServer|
+     chefServer.vm.box = "ubuntu/trusty64"
+     chefServer.vm.hostname = "chefServer"
+     chefServer.vm.synced_folder ".", "/vagrant", type: "virtualbox", disabled: true
+     chefServer.vm.provision :shell, :inline => $script_setupHosts
+     chefServer.vm.provision :shell, :inline => $script_installChef12
+     chefServer.vm.provision :shell, :inline => $script_installChefGUI
+     chefServer.vm.provision :shell, :inline => $script_installChefDK
+     chefServer.vm.provision :shell, :inline => $script_UbuntuTools
+     chefServer.vm.provision :shell, :inline => $script_setupWSChef
+     chefServer.vm.provision :shell, :inline => $script_bootstrapNodes
+     chefServer.vm.network "private_network", ip: "192.168.56.5", virtualbox__hostonly: true
+     chefServer.vm.network "forwarded_port", guest: 22, host: 5022, id: "ssh", auto_correct: true
+     chefServer.vm.provider "virtualbox" do |vm|
+      vm.name = "ChefServer12"
+			vm.customize [
+							'modifyvm', :id,
+							'--memory', '2048'
+							
+						]
+		end
+  end
+
+end
